@@ -25,17 +25,39 @@ Codex 只在启动时读一次 `~/.codex/config.toml`。所以「换供应商」
 
 ## 二、安装
 
-### 方式一：跑安装脚本（推荐）
+### 第 0 步：先把代码拿到本机
+
+**方式 A · 下载 ZIP（不熟悉命令行的选这个）**
+
+1. 打开仓库页面，点右上角绿色的 **`Code`** 按钮 → **`Download ZIP`**
+2. 解压到任意目录，比如 `D:\Tools\codex-model-switcher`
+   （解压出来可能叫 `codex-model-switcher-main`，名字无所谓，进去就行）
+3. 进目录，**双击 `install.bat`**
+
+**方式 B · git clone**
+
+```bat
+git clone https://github.com/babaozhou-ctrl/codex-model-switcher.git
+cd codex-model-switcher
+python install.py
+```
+
+> 如果提示找不到 `python`，Windows 上通常要用 `py -3 install.py`。
+> `install.bat` 会自动在 `py` 和 `python` 之间挑能用的那个。
+
+### 方式一：双击 `install.bat`（最简单）
+
+脚本会：
+
+- 找可用的 Python，把 `main.pyw` / `core.py` / `presets.json` / `README.md` 复制到 `%USERPROFILE%\.codex\profiles\`
+- 在桌面创建「Codex 模型切换」快捷方式（指向 `pythonw.exe`，不弹黑框，图标用 Codex 自己的）
+- **不会覆盖已存在的 `providers.json`**（那是你的配置，升级时要保住）
+
+### 方式二：命令行
 
 ```bat
 python install.py
 ```
-
-脚本会：
-
-- 把 `main.pyw` / `core.py` / `presets.json` / `README.md` 复制到 `%USERPROFILE%\.codex\profiles\`
-- 在桌面创建「Codex 模型切换」快捷方式（指向 `pythonw.exe`，不弹黑框）
-- **不会覆盖已存在的 `providers.json`**（那是你的配置，升级时要保住）
 
 常用参数：
 
@@ -45,7 +67,7 @@ python install.py --shortcut-only    :: 只重建快捷方式（Codex 升级后�
 python install.py --target D:\test    :: 部署到别的目录（调试用）
 ```
 
-### 方式二：手动
+### 方式三：完全手动
 
 把 `main.pyw`、`core.py`、`presets.json` 一起丢进 `%USERPROFILE%\.codex\profiles\`，
 然后双击 `main.pyw`（或给它建个快捷方式）。
@@ -54,7 +76,7 @@ python install.py --target D:\test    :: 部署到别的目录（调试用）
 
 - Windows 10 / 11
 - Python 3.8+（**只用标准库**，不需要 pip install 任何东西）
-- 已安装并至少启动过一次 Codex 桌面版（需要 `~/.codex/config.toml` 存在）
+- 已安装并至少启动过一次 Codex 桌面版（需要 `~/.codex/config.toml` 存在，工具靠它做增量改写）
 
 ---
 
@@ -285,11 +307,14 @@ codex-model-switcher/
 ├── main.pyw          # 入口 + 全部 GUI（tkinter）
 ├── core.py           # 纯逻辑，无 UI 依赖，可 import 单测
 ├── install.py        # 部署到 ~/.codex/profiles 并建桌面快捷方式
+├── install.bat       # Windows 一键安装（双击运行，自动挑 py / python）
 ├── presets.json      # 内置厂商预设（只读模板）
 ├── README.md         # 本文
+├── docs/
+│   └── screenshot.png
 ├── .gitignore
 └── tests/
-    └── test_core.py  # 93 个用例，纯标准库，不联网
+    └── test_core.py  # 96 个用例，纯标准库，不联网
 ```
 
 跑测试：
