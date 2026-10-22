@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+.Python
+build/
+dist/
+*.egg-info/
+.venv/
+venv/
+env/
+
+# 单元测试与检查工具
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# 本地运行产物（这些是部署到 %USERPROFILE%\.codex 之后才产生的，
+# 不应出现在源码仓库里）
+providers.json
+last_error.log
+models.*.json
+backup/
+*.tmp
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+desktop.ini
+.DS_Store

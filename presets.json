@@ -1,0 +1,105 @@
+{
+  "version": 1,
+  "_comment": "内置厂商预设，只读模板。用户自己配置的厂商存在 providers.json，与此文件无关。base_url 与模型名于 2026-10 核对过官方文档，仍可能随时变化，请以各家控制台为准。",
+  "presets": [
+    {
+      "id": "openai",
+      "name": "官方 GPT",
+      "kind": "official",
+      "desc": "ChatGPT 账号登录，用 auth.json 里的凭据",
+      "base_url": "",
+      "model": "gpt-6-luna",
+      "wire_api": "responses",
+      "color": "#10a37f",
+      "hint": "官方模式走 ChatGPT 账号登录，不需要填 Base URL 和 API Key。切回官方时不需要重新登录，只要 auth.json 里的 token 没过期。"
+    },
+    {
+      "id": "deepseek",
+      "name": "DeepSeek",
+      "kind": "custom",
+      "desc": "api.deepseek.com（原生支持 Responses API）",
+      "base_url": "https://api.deepseek.com/",
+      "model": "deepseek-flash",
+      "wire_api": "responses",
+      "color": "#4d6bfe",
+      "hint": "DeepSeek 自 2026-08 起原生支持 OpenAI Responses API 并针对 Codex 做过适配，是当前兼容性最好的第三方。可用模型：deepseek-flash、deepseek-v4-pro、deepseek-v4-flash。"
+    },
+    {
+      "id": "bailian",
+      "name": "阿里云百炼 / 通义千问",
+      "kind": "custom",
+      "desc": "dashscope.aliyuncs.com/compatible-mode/v1",
+      "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1/",
+      "model": "qwen3-max",
+      "wire_api": "responses",
+      "color": "#ff6a00",
+      "hint": "百炼的 OpenAI 兼容接口只提供 chat/completions。新版控制台可能要求 base_url 带业务空间前缀（https://{WorkspaceId}.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/），模型名请以控制台「模型列表」为准。"
+    },
+    {
+      "id": "moonshot",
+      "name": "月之暗面 Kimi",
+      "kind": "custom",
+      "desc": "api.moonshot.cn/v1",
+      "base_url": "https://api.moonshot.cn/v1/",
+      "model": "kimi-k2.6",
+      "wire_api": "responses",
+      "color": "#8b5cf6",
+      "hint": "Kimi 目前以 chat/completions 为主。国际站用户把域名换成 https://api.moonshot.ai/v1/ 。模型名更新很快，以 platform.moonshot.cn 为准。"
+    },
+    {
+      "id": "zhipu",
+      "name": "智谱 GLM",
+      "kind": "custom",
+      "desc": "open.bigmodel.cn/api/paas/v4",
+      "base_url": "https://open.bigmodel.cn/api/paas/v4/",
+      "model": "glm-5.3",
+      "wire_api": "responses",
+      "color": "#3b82f6",
+      "hint": "智谱的 OpenAI 兼容接口只提供 chat/completions。模型名以 docs.bigmodel.cn 为准（常见 glm-5、glm-5.3、glm-4.6v）。购买 GLM Coding Plan 时需改用专属 Coding 端点。"
+    },
+    {
+      "id": "siliconflow",
+      "name": "硅基流动 SiliconFlow",
+      "kind": "custom",
+      "desc": "api.siliconflow.cn/v1",
+      "base_url": "https://api.siliconflow.cn/v1/",
+      "model": "deepseek-ai/DeepSeek-V4-Pro",
+      "wire_api": "responses",
+      "color": "#2dd4bf",
+      "hint": "聚合平台，接口只提供 chat/completions。模型名必须带厂商前缀（如 deepseek-ai/DeepSeek-V4-Pro、Qwen/Qwen3-Coder），请到「模型广场」复制完整 ID。"
+    },
+    {
+      "id": "ark",
+      "name": "火山方舟（豆包）",
+      "kind": "custom",
+      "desc": "ark.cn-beijing.volces.com/api/v3",
+      "base_url": "https://ark.cn-beijing.volces.com/api/v3/",
+      "model": "doubao-seed-2.1-pro",
+      "wire_api": "responses",
+      "color": "#16a34a",
+      "hint": "方舟需要先在火山引擎控制台「创建推理接入点」，model 通常要填接入点 ID（ep-xxxxxxxx）而不是模型名。接口为 chat/completions。"
+    },
+    {
+      "id": "openrouter",
+      "name": "OpenRouter",
+      "kind": "custom",
+      "desc": "openrouter.ai/api/v1",
+      "base_url": "https://openrouter.ai/api/v1/",
+      "model": "anthropic/claude-opus-4-6",
+      "wire_api": "responses",
+      "color": "#f97316",
+      "hint": "聚合平台，目前只提供 chat/completions，且模型名形如 vendor/model。若要强制兼容 Codex，可在模型名后加路由后缀，但协议仍以「测试连接」结果为准。"
+    },
+    {
+      "id": "custom",
+      "name": "自定义（空白模板）",
+      "kind": "custom",
+      "desc": "任意 OpenAI 兼容网关",
+      "base_url": "",
+      "model": "",
+      "wire_api": "responses",
+      "color": "#f472b6",
+      "hint": "填任意 OpenAI 兼容网关地址，必须以 / 结尾（例如 https://api.xxx.com/v1/）。保存后务必点「测试连接」确认它支持 /responses 端点。"
+    }
+  ]
+}
