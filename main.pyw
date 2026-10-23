@@ -314,6 +314,22 @@ class ProviderDialog(tk.Toplevel):
         wrap_pad = S(20)
         self._style_ttk()
 
+        # 按钮区必须**最先** pack 并贴底。
+        # Tk 的 pack 按调用顺序从剩余空间里切块，先调用先占位；
+        # 如果按钮放在最后 pack，一旦上面内容变高（换预设时 hint 正文变长，
+        # 内容需求高度会从 462 涨到 538），底部按钮就被挤出窗口外——
+        # 用户填完 Key 却找不到「保存」，就是这个原因。
+        buttons = tk.Frame(self, bg=BG)
+        buttons.pack(side="bottom", fill="x", padx=wrap_pad, pady=(S(4), S(18)))
+        self.test_btn = FlatButton(buttons, "测试连接", self._on_test,
+                                   bg=CARD, fg=FG, font=f["body"])
+        self.test_btn.pack(side="left")
+        FlatButton(buttons, "取消", self._on_cancel, bg=CARD, fg=FG_DIM,
+                   font=f["body"]).pack(side="right")
+        FlatButton(buttons, "保存", self._on_save, bg=ACCENT, fg="#ffffff",
+                   hover="#5f7bff", font=f["body"]).pack(side="right",
+                                                         padx=(0, S(8)))
+
         head = tk.Frame(self, bg=BG)
         head.pack(fill="x", padx=wrap_pad, pady=(S(16), S(10)))
         tk.Label(head, text="编辑厂商" if self.provider else "新增厂商",
@@ -393,18 +409,6 @@ class ProviderDialog(tk.Toplevel):
                                      wraplength=S(480))
         self.status_label.pack(fill="x", padx=wrap_pad, pady=(S(10), S(4)))
 
-        # 按钮
-        buttons = tk.Frame(self, bg=BG)
-        buttons.pack(fill="x", padx=wrap_pad, pady=(S(4), S(18)))
-        self.test_btn = FlatButton(buttons, "测试连接", self._on_test,
-                                   bg=CARD, fg=FG, font=f["body"])
-        self.test_btn.pack(side="left")
-        FlatButton(buttons, "取消", self._on_cancel, bg=CARD, fg=FG_DIM,
-                   font=f["body"]).pack(side="right")
-        FlatButton(buttons, "保存", self._on_save, bg=ACCENT, fg="#ffffff",
-                   hover="#5f7bff", font=f["body"]).pack(side="right",
-                                                         padx=(0, S(8)))
-
     def _entry(self, parent, variable, show=None):
         entry = tk.Entry(parent, textvariable=variable, font=self.f["body"],
                          bg=FIELD_BG, fg=FG, insertbackground=FG, relief="flat",
@@ -430,6 +434,11 @@ class ProviderDialog(tk.Toplevel):
         width = max(self.winfo_reqwidth(), S(560))
         height = self.winfo_reqheight()
         try:
+            screen_h = self.winfo_screenheight()
+        except Exception:
+            screen_h = height
+        height = min(height, int(screen_h * 0.88))
+        try:
             root_x = master.winfo_rootx()
             root_y = master.winfo_rooty()
             root_w = master.winfo_width()
@@ -439,6 +448,29 @@ class ProviderDialog(tk.Toplevel):
         x = root_x + max(0, (root_w - width) // 2)
         y = root_y + max(0, (root_h - height) // 3)
         self.geometry("%dx%d+%d+%d" % (width, height, x, y))
+
+    def _fit_height(self):
+        """内容变高后让窗口跟着长（换预设、切类型都会改变 hint 行数）。
+
+        上限是屏幕可用高度的 88%，并保证底边不出屏。
+        按钮区已经用 side="bottom" 优先占了位，所以即使极端情况下
+        内容撑满，按钮也不会被挤出去。
+        """
+        try:
+            if not self.winfo_ismapped():
+                return
+            self.update_idletasks()
+            width = max(self.winfo_reqwidth(), S(560))
+            need = self.winfo_reqheight()
+            screen_h = self.winfo_screenheight()
+            height = min(need, int(screen_h * 0.88))
+            x, y = self.winfo_x(), self.winfo_y()
+            bottom_limit = int(screen_h * 0.94)
+            if y + height > bottom_limit:
+                y = max(0, bottom_limit - height)
+            self.geometry("%dx%d+%d+%d" % (width, height, x, y))
+        except Exception:
+            pass
 
     # ------------------------------------------------------------ 数据装载
     def _load_values(self):
@@ -501,6 +533,8 @@ class ProviderDialog(tk.Toplevel):
                 self.url_entry.icursor("end")
             except Exception:
                 pass
+        # hint 换成长文本后内容会变高，窗口要跟着长，否则底部按钮跑出可视区
+        self._fit_height()
 
     # ------------------------------------------------------------ 校验 / 保存
     def _collect(self, for_save):
