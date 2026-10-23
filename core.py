@@ -898,6 +898,15 @@ def build_models_doc(skeleton, provider):
         entry["description"] = label
     if "priority" in entry:
         entry["priority"] = 1
+    # 骨架是从 DeepSeek 的模型定义深拷贝来的，里面的能力声明属于它自己的
+    # 服务端实现。第三方厂商的 Responses 端点未必实现了 Codex 的这些扩展，
+    # 声明成支持会让 Codex 发出对方不认识的工具类型，直接把请求打回 400。
+    # 实际踩到过：supports_search_tool=True 时 Kimi 返回
+    #   invalid_request_error: tools.13: tool type "tool_search" is not supported
+    # 所以这里统一按保守值收敛，宁可少用能力也不要请求失败。
+    entry["supports_search_tool"] = False
+    if "web_search_tool_type" in entry:
+        entry["web_search_tool_type"] = None
     return {"models": [entry]}
 
 

@@ -37,14 +37,25 @@
     },
     {
       "id": "moonshot",
-      "name": "月之暗面 Kimi",
+      "name": "月之暗面 Kimi（开放平台）",
       "kind": "custom",
-      "desc": "api.moonshot.cn/v1（原生支持 Responses）",
+      "desc": "api.moonshot.cn/v1（sk- 密钥）",
       "base_url": "https://api.moonshot.cn/v1/",
       "model": "kimi-k3",
       "wire_api": "responses",
       "color": "#8b5cf6",
-      "hint": "Kimi API 自 2026-09 起原生支持 OpenAI Responses API，可直接接 Codex，无需转换格式。国内用 https://api.moonshot.cn/v1/ ，国际站用 https://api.moonshot.ai/v1/ ，base_url 必须保留 /v1。可用模型：kimi-k3（1M 上下文）、kimi-k2.7-code、kimi-k2.7-code-highspeed、kimi-k2.6。官方 Codex 接入教程：platform.kimi.com/docs/guide/codex-kimi"
+      "hint": "开放平台的密钥以 sk- 开头。Kimi API 自 2026-09 起原生支持 OpenAI Responses API，可直接接 Codex。国内用 https://api.moonshot.cn/v1/ ，国际站用 https://api.moonshot.ai/v1/ ，base_url 必须保留 /v1。可用模型：kimi-k3（1M 上下文）、kimi-k2.7-code、kimi-k2.7-code-highspeed、kimi-k2.6。注意：如果你的密钥是以 sk-kimi- 开头，那是 Kimi Code 订阅，请选上面那个「Kimi Code（订阅）」预设，端点不一样。"
+    },
+    {
+      "id": "kimi-code",
+      "name": "Kimi Code（订阅）",
+      "kind": "custom",
+      "desc": "api.kimi.com/coding/v1（sk-kimi- 密钥）",
+      "base_url": "https://api.kimi.com/coding/v1/",
+      "model": "kimi-k3",
+      "wire_api": "responses",
+      "color": "#a855f7",
+      "hint": "Kimi Code 订阅发放的密钥以 sk-kimi- 开头，端点是 https://api.kimi.com/coding/v1/ ，与开放平台（api.moonshot.cn）完全是两套账号体系，key 不能混用——把订阅密钥发到开放平台域名会返回 401 Invalid Authentication。该端点同时支持 responses / chat/completions / Anthropic messages 三种协议，接 Codex 用 responses 即可。"
     },
     {
       "id": "zhipu",
