@@ -39,12 +39,12 @@
       "id": "moonshot",
       "name": "月之暗面 Kimi",
       "kind": "custom",
-      "desc": "api.moonshot.cn/v1",
+      "desc": "api.moonshot.cn/v1（原生支持 Responses）",
       "base_url": "https://api.moonshot.cn/v1/",
-      "model": "kimi-k2.6",
+      "model": "kimi-k3",
       "wire_api": "responses",
       "color": "#8b5cf6",
-      "hint": "Kimi 目前以 chat/completions 为主。国际站用户把域名换成 https://api.moonshot.ai/v1/ 。模型名更新很快，以 platform.moonshot.cn 为准。"
+      "hint": "Kimi API 自 2026-09 起原生支持 OpenAI Responses API，可直接接 Codex，无需转换格式。国内用 https://api.moonshot.cn/v1/ ，国际站用 https://api.moonshot.ai/v1/ ，base_url 必须保留 /v1。可用模型：kimi-k3（1M 上下文）、kimi-k2.7-code、kimi-k2.7-code-highspeed、kimi-k2.6。官方 Codex 接入教程：platform.kimi.com/docs/guide/codex-kimi"
     },
     {
       "id": "zhipu",
