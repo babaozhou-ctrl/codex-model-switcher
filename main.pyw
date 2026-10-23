@@ -1215,11 +1215,15 @@ class App:
             messagebox.showinfo("无法删除", "官方 GPT 是兜底配置，不能删除。")
             return
         pid = provider.get("id")
+        was_active = self._detect_active() == pid
+        extra = ("\n\n它正是当前生效的厂商，删除后会把 config.toml 切回官方 GPT。"
+                 if was_active else "")
         if not messagebox.askyesno(
                 "删除厂商",
                 "确定从清单里删除「%s」？\n\n"
                 "只会删掉 providers.json 里的条目；config.toml 里已存在的 "
-                "[model_providers.%s] 段不会被自动清理。" % (provider.get("name"), pid)):
+                "[model_providers.%s] 段不会被自动清理。%s"
+                % (provider.get("name"), pid, extra)):
             return
         try:
             self.data = core.remove_provider(self.data, pid)
@@ -1227,6 +1231,21 @@ class App:
             messagebox.showerror("删除失败", str(exc))
             return
         self._persist()
+        if was_active:
+            # remove_provider 只是把 providers.json 的 active 切到官方 GPT，
+            # config.toml 还指着刚删掉的那个厂商。不同步的话会出现
+            # 「界面显示官方 GPT，Codex 实际仍在用已删除的配置」。
+            fallback = core.find_provider(self.data, self.data.get("active"))
+            if fallback is not None:
+                try:
+                    for line in core.apply_provider(
+                            core.CONFIG_PATH, fallback, self.base_dir,
+                            core.BACKUP_DIR, pid):
+                        self.log(line)
+                    self.log("已把 config.toml 切回「%s」，重启 Codex 后生效"
+                             % (fallback.get("name") or ""))
+                except Exception as exc:
+                    self.log("自动切回失败：%s（请手动切换一次厂商）" % exc)
         self.selected = self._detect_active()
         self._refresh_all()
         self.log("已删除厂商「%s」" % (provider.get("name") or pid))

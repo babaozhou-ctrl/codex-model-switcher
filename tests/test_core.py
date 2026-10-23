@@ -1623,6 +1623,20 @@ class TestUiSourceGuards(unittest.TestCase):
         for marker in ("def _on_test_done", "def _on_probe_done"):
             self.assertIn(marker, self.source)
 
+    def test_delete_active_provider_syncs_config(self):
+        """删除「当前生效」的厂商时，必须同步改写 config.toml。
+
+        remove_provider 只会把 providers.json 的 active 切到官方 GPT，
+        config.toml 仍指着刚删掉的厂商。不同步的话会出现
+        「界面显示官方 GPT，Codex 实际还在用已删除的配置」，
+        用户完全看不出两边已经不一致。
+        """
+        start = self.source.index("def delete_provider")
+        seg = self.source[start:start + 3200]
+        self.assertIn("was_active", seg, "delete_provider 里没有判断删的是不是当前生效的厂商")
+        self.assertIn("apply_provider", seg,
+                      "删除当前生效的厂商后没有同步 config.toml，界面与 Codex 会不一致")
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
