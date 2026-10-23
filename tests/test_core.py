@@ -1038,6 +1038,28 @@ class TestMisc(TempDirTest):
         self.assertIn("model_messages", skeleton)
         self.assertIn("supported_reasoning_levels", skeleton)
 
+    def test_models_doc_disables_search_tool(self):
+        """unsupported 的工具声明会把请求打回 400。
+
+        实际踩到：supports_search_tool=True 时 Kimi 返回
+        invalid_request_error: tools.13: tool type "tool_search" is not supported
+        """
+        doc = core.build_models_doc(core.load_models_skeleton(),
+                                    custom_provider(model="kimi-k3"))
+        self.assertIs(doc["models"][0]["supports_search_tool"], False)
+
+    def test_models_doc_never_writes_null_web_search_tool_type(self):
+        """web_search_tool_type 只接受 string 或 map，写成 null 会让 Codex 起不来。
+
+        实际踩到：`failed to parse model_catalog_json ... invalid type: null`，
+        应用直接无法启动。这里锁住「不能是 None」。
+        """
+        doc = core.build_models_doc(core.load_models_skeleton(),
+                                    custom_provider(model="kimi-k3"))
+        entry = doc["models"][0]
+        self.assertIsNotNone(entry.get("web_search_tool_type"))
+        self.assertIsInstance(entry["web_search_tool_type"], str)
+
     def test_split_config_ignores_array_brackets(self):
         head, sections = core.split_config(SAMPLE_CONFIG)
         self.assertTrue(head.startswith("check_for_update_on_startup"))

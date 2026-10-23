@@ -938,8 +938,9 @@ def build_models_doc(skeleton, provider):
     #   invalid_request_error: tools.13: tool type "tool_search" is not supported
     # 所以这里统一按保守值收敛，宁可少用能力也不要请求失败。
     entry["supports_search_tool"] = False
-    if "web_search_tool_type" in entry:
-        entry["web_search_tool_type"] = None
+    # 注意：不要动 web_search_tool_type。它只接受字符串或 map，写成 null 会让
+    # Codex 直接报 “failed to parse model_catalog_json ... invalid type: null”，
+    # 连应用都起不来。联网搜索本来就由 config.toml 的 web_search = "disabled" 关闭。
     return {"models": [entry]}
 
 
