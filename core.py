@@ -340,8 +340,12 @@ def build_config(base_text, provider, profiles_dir):
         catalog_path = to_forward_slashes(
             os.path.join(profiles_dir, "models.%s.json" % pid))
         key_lines.append("model_provider = %s" % _toml_str(pid))
-        key_lines.append('preferred_auth_method = "apikey"')
-        key_lines.append('forced_login_method = "api"')
+        # 不再写 preferred_auth_method / forced_login_method。
+        # 这两个键是旧版 Codex 用来「强制走 API key 模式」的，新版本
+        # （实测 26.1016.8120.0 / codex-cli 0.163.0-alpha.11.1）改了判定方式：
+        # 看到 config 写着 apikey、而 auth.json 还是 ChatGPT 登录态时，
+        # 会先执行一次登出再继续，整个启动流程就卡在策略读取超时上，
+        # 表现为进程起来但一个窗口都不出。去掉之后 `codex exec` 能正常返回。
         key_lines.append('web_search = "disabled"')
         key_lines.append("model_catalog_json = %s" % _toml_str(catalog_path))
 
@@ -397,13 +401,18 @@ def validate_config(text, provider):
             problems.append("provider id 不合法：%r（只允许字母数字下划线连字符）"
                             % pid)
 
-        for key in ("model_provider",
-                    "preferred_auth_method",
-                    "forced_login_method",
-                    "web_search",
-                    "model_catalog_json"):
+        for key in ("model_provider", "web_search", "model_catalog_json"):
             if key not in keys:
                 problems.append("缺少顶层键 %s" % key)
+
+        # 这两个键必须不出现：新版 Codex（26.1016.8120.0 起）见到
+        # 「config 写 apikey、auth.json 仍是 ChatGPT 登录态」会先登出再继续，
+        # 结果卡在 startup policy 读取超时——进程起来了但一个窗口都不显示。
+        for key in ("preferred_auth_method", "forced_login_method"):
+            if key in keys:
+                problems.append(
+                    "不应出现顶层键 %s（新版 Codex 会因此在启动时卡死，"
+                    "请删掉这一行）" % key)
 
         provider_value = keys.get("model_provider", "").strip("\"'")
         if provider_value != pid:

@@ -366,16 +366,19 @@ class TestBuildConfigCustom(TempDirTest):
         TempDirTest.setUp(self)
         self.provider = custom_provider()
 
-    def test_six_top_level_keys_written(self):
+    def test_top_level_keys_written(self):
         text = core.build_config(SAMPLE_CONFIG, self.provider, self.profiles)
         head, _sections = core.split_config(text)
         keys = core._parse_top_keys(head)
         self.assertEqual(keys.get("model"), '"deepseek-flash"')
         self.assertEqual(keys.get("model_provider"), '"deepseek"')
-        self.assertEqual(keys.get("preferred_auth_method"), '"apikey"')
-        self.assertEqual(keys.get("forced_login_method"), '"api"')
         self.assertEqual(keys.get("web_search"), '"disabled"')
         self.assertIn("models.deepseek.json", keys.get("model_catalog_json", ""))
+        # 不能写 preferred_auth_method / forced_login_method：
+        # 新版 Codex 见到「config 写 apikey 但 auth.json 仍是 ChatGPT 登录态」
+        # 会先登出再继续，整个启动卡在策略读取超时（进程在、窗口不出）。
+        self.assertNotIn("preferred_auth_method", keys)
+        self.assertNotIn("forced_login_method", keys)
 
     def test_catalog_path_uses_forward_slashes(self):
         text = core.build_config(SAMPLE_CONFIG, self.provider, self.profiles)
