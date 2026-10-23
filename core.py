@@ -672,10 +672,12 @@ def remove_provider(data, provider_id):
 
 
 def seed_providers(presets, config_text):
-    """首次运行时播种 providers.json：官方 GPT + DeepSeek。
+    """首次运行时播种 providers.json。
 
-    如果当前 config.toml 里已经有 [model_providers.deepseek] 段，
-    就把里面的 base_url / key 继承过来，用户不用重新粘贴。
+    先放入官方 GPT + DeepSeek 两个基础项（deepseek 的 base_url / key
+    能从现有 config.toml 的 [model_providers.deepseek] 段继承）；
+    再把 config 里其他 [model_providers.*] 段也一并认领进来，
+    这样老用户升级后不会发现「我配过的厂商不见了」。
     """
     inherited = extract_provider_sections(config_text)
     existing_ids = []
@@ -699,6 +701,37 @@ def seed_providers(presets, config_text):
             item["base_url"] = ensure_trailing_slash(
                 carried.get("base_url") or preset.get("base_url") or "")
             item["api_key"] = carried.get("api_key") or ""
+        existing_ids.append(pid)
+        seeded.append(item)
+
+    # 把 config.toml 里已有、但不在上面这组基础清单里的 provider 段也认领进来。
+    # 否则从旧版升级、或手工配过别家的用户，首次打开会发现「我配的厂商不见了」。
+    preset_by_id = {}
+    for preset in presets or []:
+        preset_by_id[preset.get("id") or ""] = preset
+    top_head, _ = split_config(config_text or "")
+    top_keys = _parse_top_keys(top_head)
+    top_model = top_keys.get("model", "").strip("\"'")
+    top_provider = top_keys.get("model_provider", "").strip("\"'")
+
+    for pid, carried in (inherited or {}).items():
+        if pid in existing_ids:
+            continue
+        if not carried.get("base_url"):
+            continue                      # 没有 base_url 的段没法用，跳过
+        preset = preset_by_id.get(pid) or {}
+        model = preset.get("model") or (top_model if top_provider == pid else "")
+        item = {
+            "id": pid,
+            "name": carried.get("name") or preset.get("name") or pid,
+            "kind": "custom",
+            "desc": preset.get("desc") or carried.get("base_url") or "",
+            "model": model,
+            "color": preset.get("color") or pick_color(len(seeded)),
+            "wire_api": carried.get("wire_api") or preset.get("wire_api") or DEFAULT_WIRE_API,
+            "base_url": ensure_trailing_slash(carried.get("base_url") or ""),
+            "api_key": carried.get("api_key") or "",
+        }
         existing_ids.append(pid)
         seeded.append(item)
 

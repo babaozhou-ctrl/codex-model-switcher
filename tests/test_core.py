@@ -907,6 +907,40 @@ class TestSeedProviders(TempDirTest):
         self.assertEqual(data["active"], "openai")
         self.assertEqual(core.find_provider(data, "deepseek")["api_key"], "")
 
+    def test_seed_also_inherits_other_providers_from_config(self):
+        """config 里除 deepseek 之外的 provider 段也要被认领进来。
+
+        否则从旧版升级、或手工配过别家的用户，首次打开会看不到自己配过的厂商。
+        """
+        presets = [
+            {"id": "openai", "name": "官方 GPT", "kind": "official",
+             "model": "gpt-6-luna"},
+            {"id": "deepseek", "name": "DeepSeek", "kind": "custom",
+             "base_url": "https://api.deepseek.com/", "model": "deepseek-flash"},
+        ]
+        config = SAMPLE_CONFIG + (
+            '\n[model_providers.kimi-code]\n'
+            'name = "kimi-code"\n'
+            'base_url = "https://api.kimi.com/coding/v1/"\n'
+            'wire_api = "responses"\n'
+            'experimental_bearer_token = "sk-kimi-placeholder"\n'
+        )
+        data = core.seed_providers(presets, config)
+        ids = [p["id"] for p in data["providers"]]
+        self.assertIn("kimi-code", ids)
+        kimi = core.find_provider(data, "kimi-code")
+        self.assertEqual(kimi["api_key"], "sk-kimi-placeholder")
+        self.assertEqual(kimi["base_url"], "https://api.kimi.com/coding/v1/")
+        self.assertEqual(kimi["wire_api"], "responses")
+
+    def test_seed_skips_provider_section_without_base_url(self):
+        """没有 base_url 的段没法用，不应被认领进来。"""
+        presets = [{"id": "openai", "name": "官方 GPT", "kind": "official"}]
+        config = SAMPLE_CONFIG + '\n[model_providers.broken]\nname = "broken"\n'
+        data = core.seed_providers(presets, config)
+        ids = [p["id"] for p in data["providers"]]
+        self.assertNotIn("broken", ids)
+
     def test_load_or_seed_creates_file(self):
         path = os.path.join(self.tmp, "providers.json")
         config = os.path.join(self.tmp, "config.toml")
