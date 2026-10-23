@@ -1169,6 +1169,237 @@ def _http_post(url, payload, api_key, timeout):
     raise NetError(_describe_net_error(last_error))
 
 
+# ------------------------------------------------- 模型名错误的识别
+# 很多厂商在「模型名写错」时返回的不是 404，而是 400（也有 404/405），
+# 错误体里通常写得很清楚：model not found / invalid model / 模型不存在…
+# 只按状态码判断会把这情况误报成「端点存在、可用」，界面显示绿灯，
+# 用户保存后每次真实请求都失败，而且界面上没有任何线索。所以判定
+# 400 / 404 / 405 之前，必须先看一眼响应体。
+#
+# 但反过来误伤同样有害：把「参数错误」判成「模型名错误」会让一个完全
+# 正常的厂商长期顶着红灯，用户跑去改一个本来正确的模型名。所以这里分两层：
+#
+#   strong —— 语义上无歧义地指向模型名本身（model not found / 模型不存在…）
+#             可以直接判 fail，并且不必再去试 chat 端点；
+#   weak   —— 需要推断（「模型」+ 否定词、model + does not exist），
+#             有可能只是参数问题，因此只给 warn，且仍照常去试 chat 端点。
+#
+# 响应体可能很大（HTML 错误页、云厂商的 XML），先截断再转小写：避免性能
+# 问题，也避免正文深处偶然出现的短语造成误匹配。截断长度必须与
+# _http_post 里 exc.read(4096) 对齐 —— 大于读取上限是浪费，小于读取上限
+# 则在 2000~4096 之间留出一段「真实可达却看不到」的盲区。
+MODEL_ERROR_BODY_LIMIT = 4096
+
+# strong：各家常见说法的英文 / 带下划线写法（一律按小写比较）。
+# 注意这里没有 "invalid model" —— 它太宽（"invalid model parameter value"
+# 是参数错误），改用下面的 _INVALID_MODEL_RE 带负向前瞻判断。
+STRONG_MODEL_ERROR_MARKERS = (
+    "model not found",
+    "model does not exist",
+    "model_not_found",
+    "no such model",
+    "unknown model",
+    "model is not available",
+    # 部分聚合平台的措辞："does not have access to model xxx"、
+    # "you do not have access to model xxx"（do / does 两种都真实出现过），
+    # 这里用去掉 s 的写法一次覆盖。
+    "not have access to model",
+    "模型不存在",
+    "模型不可用",
+    "模型未开通",
+    "模型无权访问",
+)
+
+# "invalid model" 族：model 后面跟的不是参数/类型/字段这类词时才算模型名错误。
+#   "invalid model name: gpt-9" / "invalid model id" / "invalid model: gpt-9" → 命中
+#   "invalid model parameter value: ..." / "invalid model type"             → 不命中
+_INVALID_MODEL_RE = re.compile(
+    r"invalid model(?![:\s]*(?:parameter|param|value|type|schema|argument|field))")
+
+# strong 的结构式：模型名夹在短语中间，定长 marker 匹配不到。
+#   "The model `gpt-9` does not exist"
+#   "The model `gpt-4.2` does not exist or you do not have access to it."
+# 三个约束避免误伤：
+#   1. 否定词必须出现在 model 之后（同一句内）——
+#      "parameter temperature does not exist for model gpt-4o" 这种
+#      否定词在前的参数错误就不会命中；
+#   2. 句子边界是「点 + 空白」或「点 + 结尾」，**不是**所有点号 ——
+#      现代模型名几乎都带点（gpt-4.2 / claude-3.5-sonnet / qwen2.5 /
+#      llama-3.1），把点当句子边界会让这些全部漏判成绿灯；
+#   3. 换行算边界（字符类里排除了 \n）。真实 HTTP 报文里，JSON 字符串内部的
+#      换行会被转义成 \n 两个字符（反斜杠 + n），不在排除集里，能正常跨过；
+#      字面换行只会出现在 JSON 字段之间，那里本来就该断开。
+_EN_MODEL_ABSENT_RE = re.compile(
+    r"\bmodels?\b(?:(?!\.\s|\.$)[^;\n]){0,40}?(?:does not exist|do not exist|not exist|not found)")
+
+# weak 的结构式：只能说明「这个模型眼下用不了」，说不清是名字错还是不可用。
+# 点号规则与上面的 _EN_MODEL_ABSENT_RE 完全一致（模型名带点是常态，
+# gpt-4.2 / qwen2.5；两层用两套规则迟早出事）。
+_EN_MODEL_WEAK_RE = re.compile(
+    r"\bmodels?\b(?:(?!\.\s|\.$)[^;\n]){0,40}?"
+    r"(?:is\s+not\s+available|not\s+available|is\s+not\s+supported|unavailable)")
+
+# weak 的中文结构式：「模型」后 12 字符内紧跟否定词。
+#   "模型 GPT-9 不存在"        → weak（间距 7）
+#   "模型参数 temperature 不存在" → 间距 17，不再命中（这是参数错误）
+_ZH_MODEL_WEAK_RE = re.compile(u"模型[^。；\n]{0,12}(?:不存在|不可用|未开通|无权访问)")
+
+# 中文里「模型」后面接这些词时，说的是围绕模型的 API / 周边能力，不是模型名：
+#   "模型列表接口暂时不可用，不影响推理" → 是接口挂了，不是模型名错
+#   "模型目录不存在"                    → 是模型仓库/目录，不是模型名错
+#   "模型参数不存在"                    → 是参数错
+# 命中则不参与 weak 判定（与英文的 _EN_MODEL_OFFTOPIC_RE 同一个作用）。
+_ZH_OFFTOPIC_RE = re.compile(
+    u"模型(?:列表|接口|服务|文档|价格|计费|监控|管理|市场|广场|详情|用量|参数"
+    u"|目录|库|网关)")
+
+# 英文同理：model 后面紧跟这些词时，说的是 API 面而不是某个具体模型。
+#   "model list endpoint is not available" → ok
+#   "model gpt-4o is unavailable"          → 仍走 weak 兜底
+_EN_MODEL_OFFTOPIC_RE = re.compile(
+    r"\bmodels?\s+(?:list|listing|endpoint|docs?|documentation|catalog|catalogue"
+    r"|api|pricing|prices|usage|dashboard|console)\b")
+
+# 参数类词汇：出现在 model 附近时，说明讨论的是参数而不是模型名。
+# 注意这里**不收 "value"** —— 厂商报文里 "valid values: gpt-4o"、
+# "please check the value" 太常见，一收就会把真阳性漏判成绿灯。
+_PARAM_CONTEXT_RE = re.compile(
+    u"parameter|param|argument|field|attribute|schema|参数")
+
+# model 词前后各看这么多字符来判断是否在讲参数
+_PARAM_CONTEXT_WINDOW = 40
+
+# 400 有时是 Key 的问题（多数厂商把 Key 错报成 400 而不是 401），
+# 命中就判 auth_fail，别让一个坏 Key 顶着绿灯。
+# 只对 400 生效：401/403 分支本来就判 auth_fail，无需重复。
+KEY_ERROR_MARKERS = (
+    "invalid api key",
+    "incorrect api key",
+    "api key is invalid",
+    "api key not valid",
+    "api key has expired",
+    "expired api key",
+    "invalid_api_key",
+    u"api 密钥无效",
+    u"密钥无效",
+)
+
+
+def _normalized_body(body_text):
+    """把响应体截断并转小写，返回供匹配用的文本（空则返回 ""）。"""
+    if not body_text:
+        return ""
+    try:
+        return str(body_text)[:MODEL_ERROR_BODY_LIMIT].lower()
+    except Exception:
+        return ""
+
+
+def _has_param_context(text, start, end):
+    """model 词附近是否出现参数类词汇。
+
+    Args:
+        text: 已转小写的响应体。
+        start: 命中片段的起始下标。
+        end: 命中片段的结束下标。
+
+    Returns:
+        bool: 附近有 parameter / param / schema / value / 参数 之类词汇时返回
+        True —— 此时更可能是在说参数而不是模型名。
+    """
+    left = max(0, start - _PARAM_CONTEXT_WINDOW)
+    right = min(len(text), end + _PARAM_CONTEXT_WINDOW)
+    return bool(_PARAM_CONTEXT_RE.search(text[left:right]))
+
+
+def _model_error_level(body_text):
+    """判断响应体是否在说「模型名有问题」，并给出置信度。
+
+    Args:
+        body_text: 服务端返回的原始响应体，可能是 JSON / HTML / XML，
+            也可能是空串或 None。
+
+    Returns:
+        str: "strong" 明确指向模型名本身；"weak" 疑似但可能误伤；
+        空串表示不像模型名问题。
+    """
+    text = _normalized_body(body_text)
+    if not text:
+        return ""
+    for marker in STRONG_MODEL_ERROR_MARKERS:
+        if marker in text:
+            return "strong"
+    if _INVALID_MODEL_RE.search(text):
+        return "strong"
+    # 上下文里出现参数类词汇时不能判 strong（会误伤参数错误），但也**不能
+    # 落回空串**（那等于绿灯，真阳性就漏了）—— 记下来，最后降级成 weak。
+    downgraded = False
+    for match in _EN_MODEL_ABSENT_RE.finditer(text):
+        if _EN_MODEL_OFFTOPIC_RE.match(text, match.start()):
+            continue
+        if _has_param_context(text, match.start(), match.end()):
+            downgraded = True
+            continue
+        return "strong"
+    for match in _ZH_MODEL_WEAK_RE.finditer(text):
+        # 逐个确认「模型」后面接的不是「列表/接口/目录/参数」这类周边名词
+        if _ZH_OFFTOPIC_RE.match(text, match.start()):
+            continue
+        return "weak"
+    for match in _EN_MODEL_WEAK_RE.finditer(text):
+        if _EN_MODEL_OFFTOPIC_RE.match(text, match.start()):
+            continue
+        if _has_param_context(text, match.start(), match.end()):
+            downgraded = True
+            continue
+        return "weak"
+    if downgraded:
+        return "weak"
+    return ""
+
+
+def _looks_like_model_error(body_text):
+    """响应体是否「像」在说模型名有问题（strong / weak 都算）。
+
+    只用于粗筛与测试；真正决定 status 的是 _model_error_level。
+    """
+    return bool(_model_error_level(body_text))
+
+
+def _looks_like_key_error(body_text):
+    """响应体是否在说 Key 无效（用于 400 —— 不少厂商把 Key 错报成 400）。"""
+    text = _normalized_body(body_text)
+    if not text:
+        return False
+    for marker in KEY_ERROR_MARKERS:
+        if marker in text:
+            return True
+    return False
+
+
+def _safe_model_name(model, secret):
+    """把用户填的模型名安全地嵌进文案。
+
+    model 是用户手填的内容，一律过 redact（与全模块「面向用户的文本
+    绝不带密钥」的约定保持一致）。注意是用 api_key 当密钥去掩码，
+    而不是 redact(model, model) —— 后者会把模型名本身掩成 gpt****-9，
+    正好毁掉「文案要带上模型名方便对照」这个目的。
+    """
+    return redact((model or "").strip(), secret).strip() or "(空)"
+
+
+def _model_error_detail(model, secret):
+    """strong 命中的详情文案：可以确定是模型名本身的问题。"""
+    return "模型名不存在或不可用：%s（检查是否拼错，或该 Key 无权访问这个模型）" \
+        % _safe_model_name(model, secret)
+
+
+def _model_error_warn_detail(model, secret):
+    """weak 命中的详情文案：只能说疑似，端点本身是存在的。"""
+    return "疑似模型名问题，请核对模型名 %s；若模型名无误可忽略此提示" \
+        % _safe_model_name(model, secret)
+
+
 def probe_provider(base_url, api_key, model, timeout=15):
     """真的发一次最小请求，判断 Key 是否可用、协议是否兼容。
 
@@ -1193,7 +1424,7 @@ def probe_provider(base_url, api_key, model, timeout=15):
 
     secret = api_key or ""
     try:
-        code, _body = _http_post(url, payload, secret, timeout)
+        code, body = _http_post(url, payload, secret, timeout)
     except NetError as exc:
         return "fail", redact("无法连接：%s" % exc, secret), None
     except Exception as exc:
@@ -1206,9 +1437,31 @@ def probe_provider(base_url, api_key, model, timeout=15):
     if code == 429:
         return "warn", "被限流，端点可用", "responses"
     if code == 400:
+        # 400 有三种含义，必须先看 body 再下结论。顺序是 key → strong → weak：
+        #   * Key 无效（不少厂商把 Key 错报成 400）→ auth_fail。放在最前面，
+        #     因为 Key 坏了的时候报文里出现的「model not found」多半是假象，
+        #     先报鉴权失败让用户去查 Key 才是对的
+        #   * 模型名写错（多数厂商不用 404 表示 model not found）→ fail，
+        #     否则界面绿灯、用户保存后每次请求都失败
+        #   * 参数差异（max_output_tokens 太大之类）→ 端点确实可用
+        if _looks_like_key_error(body):
+            return "auth_fail", "Key 无效或无权限", None
+        level = _model_error_level(body)
+        if level == "strong":
+            return "fail", _model_error_detail(model, secret), None
+        if level == "weak":
+            # 只是「疑似」：端点确实在，模型名不一定错。给 warn 而不是 fail，
+            # 别让本该正常的厂商长期顶着红灯。
+            return "warn", _model_error_warn_detail(model, secret), "responses"
         return "ok", "端点存在（HTTP 400，参数差异）", "responses"
 
     if code in (404, 405):
+        # 同样先看 body，但只有 strong 才值得跳过 chat 探测。若其实是模型名
+        # 的问题，去试 chat 只会把它误报成「Base URL 错」或「只支持 chat」。
+        # weak 不能据此否定端点：一个 404 页面里提到 /models 很常见，
+        # 那种情况必须继续试 chat，才能落到「该厂商只支持 chat」这个正确结论。
+        if _model_error_level(body) == "strong":
+            return "fail", _model_error_detail(model, secret), None
         chat_url = base + "chat/completions"
         chat_payload = {
             "model": model,

@@ -13,7 +13,9 @@ import re
 import sys
 import shutil
 import tempfile
+import time
 import unittest
+from unittest import mock
 
 # 让 tests/ 子目录能 import 到上一层的 core.py
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -174,6 +176,52 @@ def official_provider(**overrides):
     }
     provider.update(overrides)
     return provider
+
+
+# ---------------------------------------------------------------- 探测用假 HTTP
+PROBE_BASE = "https://api.example.com/v1/"
+PROBE_KEY = "sk-test-0123456789abcdef"
+PROBE_MODEL = "deepseek-flash"
+
+
+class FakeHttp(object):
+    """伪造 core._http_post，按 URL 后缀返回预设响应，并记录每次请求。
+
+    探测相关的用例一律靠它驱动，**绝不发真实网络请求**：
+    既保证测试离线可跑，也能用 calls 精确断言「有没有去试 chat 端点」。
+
+    responses 的 key 是 URL 后缀（"responses" / "chat/completions"），
+    值可以是 (状态码, 响应体) 二元组，也可以是抛异常的 callable。
+    """
+
+    def __init__(self, responses=None):
+        self.responses = dict(responses or {})
+        self.calls = []
+
+    def __call__(self, url, payload, api_key, timeout):
+        self.calls.append(url)
+        matched = ""
+        for suffix in self.responses:
+            if url.endswith(suffix) and len(suffix) > len(matched):
+                matched = suffix
+        if not matched:
+            raise AssertionError("未预期的请求（测试没有为它准备响应）：%s" % url)
+        result = self.responses[matched]
+        if callable(result):
+            return result(url)
+        return result
+
+    def count(self, suffix="chat/completions"):
+        """统计命中某个后缀的请求次数（默认数 chat 探测次数）。"""
+        return len([url for url in self.calls if url.endswith(suffix)])
+
+
+def raise_net_error(url):
+    raise core.NetError("连接被拒绝")
+
+
+def raise_plain_error(url):
+    raise OSError("socket 意外断开")
 
 
 class TempDirTest(unittest.TestCase):
@@ -981,6 +1029,512 @@ class TestMisc(TempDirTest):
         status, detail, wire = core.probe_provider("", "sk-x", "m", timeout=1)
         self.assertEqual(status, "fail")
         self.assertIsNone(wire)
+
+
+# ---------------------------------------------------------------- 探测：原有分支回归
+class ProbeTestBase(unittest.TestCase):
+    """探测用例的公共脚手架：全程伪造 _http_post，不联网。"""
+
+    def probe(self, responses, model=PROBE_MODEL, base_url=PROBE_BASE,
+              api_key=PROBE_KEY):
+        fake = FakeHttp(responses)
+        with mock.patch.object(core, "_http_post", fake):
+            status, detail, wire = core.probe_provider(
+                base_url, api_key, model, timeout=1)
+        return status, detail, wire, fake
+
+
+class TestProbeExistingBranches(ProbeTestBase):
+    """12 条原有探测分支的回归锁 —— 修「模型名误报」时一条都不能动。
+
+    这些分支以前没有用例覆盖（只在人工点界面时验过），这里补齐，
+    保证本次改动不会顺手把「400 参数差异判 ok」「404 回落 chat 探测」
+    之类的行为改坏。
+    """
+
+    def test_200_is_ok_responses(self):
+        status, _detail, wire, fake = self.probe(
+            {"responses": (200, '{"id":"resp_1","output":[]}')})
+        self.assertEqual((status, wire), ("ok", "responses"))
+        self.assertEqual(fake.count(), 0, "200 时不该再去试 chat")
+
+    def test_400_non_model_error_is_ok(self):
+        status, detail, wire, _fake = self.probe(
+            {"responses": (400, '{"error":"max_output_tokens too large"}')})
+        self.assertEqual((status, wire), ("ok", "responses"))
+        self.assertIn("400", detail)
+
+    def test_401_is_auth_fail(self):
+        status, _detail, wire, _fake = self.probe(
+            {"responses": (401, '{"error":"invalid api key"}')})
+        self.assertEqual((status, wire), ("auth_fail", None))
+
+    def test_403_is_auth_fail(self):
+        status, _detail, wire, _fake = self.probe(
+            {"responses": (403, '{"error":"forbidden"}')})
+        self.assertEqual((status, wire), ("auth_fail", None))
+
+    def test_429_is_warn(self):
+        status, _detail, wire, _fake = self.probe(
+            {"responses": (429, '{"error":"rate limited"}')})
+        self.assertEqual((status, wire), ("warn", "responses"))
+
+    def test_404_with_chat_200_warns_chat_only(self):
+        status, detail, wire, fake = self.probe({
+            "responses": (404, "not found"),
+            "chat/completions": (200, '{"choices":[]}'),
+        })
+        self.assertEqual((status, wire), ("warn", "chat"))
+        self.assertIn("chat", detail)
+        self.assertEqual(fake.count(), 1)
+
+    def test_405_with_chat_200_warns_chat_only(self):
+        status, _detail, wire, _fake = self.probe({
+            "responses": (405, "method not allowed"),
+            "chat/completions": (200, '{"choices":[]}'),
+        })
+        self.assertEqual((status, wire), ("warn", "chat"))
+
+    def test_404_with_chat_404_fails_endpoint_missing(self):
+        status, detail, wire, fake = self.probe({
+            "responses": (404, "not found"),
+            "chat/completions": (404, "not found"),
+        })
+        self.assertEqual((status, wire), ("fail", None))
+        self.assertIn("端点不存在", detail)
+        self.assertEqual(fake.count(), 1)
+
+    def test_404_with_chat_401_is_auth_fail(self):
+        status, _detail, wire, _fake = self.probe({
+            "responses": (404, "not found"),
+            "chat/completions": (401, '{"error":"invalid api key"}'),
+        })
+        self.assertEqual((status, wire), ("auth_fail", None))
+
+    def test_500_and_502_are_fail(self):
+        for code in (500, 502, 503, 504):
+            status, detail, wire, _fake = self.probe(
+                {"responses": (code, "server error")})
+            self.assertEqual((status, wire), ("fail", None), code)
+            self.assertIn(str(code), detail)
+
+    def test_unexpected_status_is_fail(self):
+        status, _detail, wire, _fake = self.probe(
+            {"responses": (418, "i am a teapot")})
+        self.assertEqual((status, wire), ("fail", None))
+
+    def test_connection_refused_is_fail(self):
+        status, detail, wire, _fake = self.probe(
+            {"responses": raise_net_error})
+        self.assertEqual((status, wire), ("fail", None))
+        self.assertIn("无法连接", detail)
+
+    def test_generic_exception_is_fail_not_crash(self):
+        status, detail, wire, _fake = self.probe(
+            {"responses": raise_plain_error})
+        self.assertEqual((status, wire), ("fail", None))
+        self.assertIn("无法连接", detail)
+
+    def test_empty_base_url_is_fail_without_any_request(self):
+        fake = FakeHttp({"responses": (200, "{}")})
+        with mock.patch.object(core, "_http_post", fake):
+            status, _detail, wire = core.probe_provider("", PROBE_KEY, PROBE_MODEL)
+        self.assertEqual((status, wire), ("fail", None))
+        self.assertEqual(fake.calls, [], "空 base_url 不该发任何请求")
+
+
+# ---------------------------------------------------------------- 探测：模型名错误
+class TestProbeModelNameErrors(ProbeTestBase):
+    """模型名写错时必须 fail，且不能继续去试 chat 端点。
+
+    修复前：厂商用 400 回 model not found，被一律判成「端点存在、可用」，
+    界面绿灯，用户保存后每次请求都失败且毫无线索。
+    """
+
+    def test_400_model_not_found_is_fail(self):
+        status, detail, wire, fake = self.probe(
+            {"responses": (400, '{"error":"model not found"}')})
+        self.assertEqual((status, wire), ("fail", None))
+        self.assertIn("模型", detail)
+        self.assertEqual(fake.count(), 0)
+
+    def test_400_nested_invalid_model_message_is_fail(self):
+        status, detail, wire, _fake = self.probe(
+            {"responses": (400, '{"error":{"message":"invalid model: gpt-9"}}')})
+        self.assertEqual((status, wire), ("fail", None))
+        self.assertIn("模型", detail)
+
+    def test_400_model_does_not_exist_is_fail(self):
+        status, _detail, wire, _fake = self.probe(
+            {"responses": (400,
+                           '{"error":{"message":"The model does not exist"}}')})
+        self.assertEqual((status, wire), ("fail", None))
+
+    def test_400_chinese_body_is_fail(self):
+        status, detail, wire, _fake = self.probe(
+            {"responses": (400, '{"msg":"模型不存在或不可用"}')})
+        self.assertEqual((status, wire), ("fail", None))
+        self.assertIn("模型", detail)
+
+    def test_400_openai_style_message_without_code_is_fail(self):
+        """真实 OpenAI 措辞：模型名被反引号夹在中间，code 字段可能被裁剪掉。"""
+        body = ('{"error":{"message":"The model `gpt-9` does not exist '
+                'or you do not have access to it.","type":"invalid_request_error"}}')
+        status, detail, wire, _fake = self.probe({"responses": (400, body)})
+        self.assertEqual((status, wire), ("fail", None))
+        self.assertIn("模型", detail)
+
+    def test_404_model_error_skips_chat_probe(self):
+        """404 + 模型名错误：必须直接 fail，不能去试 chat。
+
+        否则「模型名错」会被误报成「Base URL 错」或「只支持 chat」，
+        用户会去改 Base URL，越改越偏。
+        """
+        status, detail, wire, fake = self.probe(
+            {"responses": (404, '{"error":"model not found"}')})
+        self.assertEqual((status, wire), ("fail", None))
+        self.assertIn("模型", detail)
+        self.assertEqual(fake.count(), 0,
+                         "查明是模型名问题后不该再请求 chat 端点")
+        self.assertEqual(len(fake.calls), 1)
+
+    def test_405_model_error_skips_chat_probe(self):
+        status, _detail, wire, fake = self.probe(
+            {"responses": (405, '{"error":"unknown model"}')})
+        self.assertEqual((status, wire), ("fail", None))
+        self.assertEqual(fake.count(), 0)
+
+    def test_404_non_model_error_still_probes_chat(self):
+        status, _detail, wire, fake = self.probe({
+            "responses": (404, "<html>404 page not found</html>"),
+            "chat/completions": (200, '{"choices":[]}'),
+        })
+        self.assertEqual((status, wire), ("warn", "chat"))
+        self.assertEqual(fake.count(), 1, "非模型错误的 404 仍要回落 chat 探测")
+
+    def test_detail_carries_the_model_name_user_typed(self):
+        status, detail, _wire, _fake = self.probe(
+            {"responses": (400, '{"error":"model not found"}')},
+            model="gpt-9-typo")
+        self.assertEqual(status, "fail")
+        self.assertIn("gpt-9-typo", detail, "文案要带上用户填的模型名")
+
+    def test_model_name_goes_through_redact(self):
+        """模型名是用户输入，拼进文案前要过 redact。
+
+        真实场景：用户手滑把 Key 粘进了模型名输入框。这时详情文案里
+        不能把 Key 原样显示出来（沿用全模块「面向用户的文本绝不带密钥」的约定）。
+        """
+        key = "sk-0123456789abcdef"
+        status, detail, _wire, _fake = self.probe(
+            {"responses": (400, '{"error":"model not found"}')},
+            model=key, api_key=key)
+        self.assertEqual(status, "fail")
+        self.assertNotIn(key, detail)
+        self.assertIn("sk-****def", detail)
+
+    def test_empty_model_name_does_not_crash(self):
+        status, detail, wire, _fake = self.probe(
+            {"responses": (400, '{"error":"model not found"}')}, model="")
+        self.assertEqual((status, wire), ("fail", None))
+        self.assertIn("模型", detail)
+
+    def test_huge_html_body_is_not_misjudged(self):
+        """200KB 的 HTML 错误页：不崩溃、不误判、也不慢。"""
+        body = "<html><body>" + ("internal error <br/>" * 10000) + "</body></html>"
+        self.assertGreater(len(body), 200 * 1000)
+        started = time.time()
+        status, _detail, wire, _fake = self.probe({"responses": (400, body)})
+        elapsed = time.time() - started
+        self.assertEqual((status, wire), ("ok", "responses"))
+        self.assertLess(elapsed, 2.0, "超长响应体不应该拖慢判定")
+
+    def test_huge_xml_body_with_model_error_is_fail(self):
+        # 命中字段必须在截断窗口（前 2000 字符）内，否则按设计不判命中
+        body = "<Error><Message>model not found</Message>" + \
+               ("<Detail>invalid request</Detail>" * 5000) + "</Error>"
+        self.assertGreater(len(body), 100 * 1000)
+        status, _detail, wire, _fake = self.probe({"responses": (400, body)})
+        self.assertEqual((status, wire), ("fail", None))
+
+
+class TestProbeDottedModelNames(ProbeTestBase):
+    """带点的模型名：最容易漏判、也最容易被用户打错的一批（关键验收点）。
+
+    gpt-4.2 / claude-3.5-sonnet / gemini-1.5-pro / qwen2.5 / llama-3.1 ——
+    如果把点号当句子边界，这些报文会全部漏判成绿灯，而用户打错模型名时
+    厂商返回的正是这种句子。
+    """
+
+    def test_dotted_gpt_with_access_clause_is_fail(self):
+        body = ('The model `gpt-4.2` does not exist '
+                'or you do not have access to it.')
+        status, detail, wire, _fake = self.probe(
+            {"responses": (400, body)}, model="gpt-4.2")
+        self.assertEqual((status, wire), ("fail", None))
+        self.assertIn("gpt-4.2", detail)
+
+    def test_claude_dotted_version_is_fail(self):
+        body = 'The model `claude-3.5-sonnet-20241022` does not exist'
+        status, _detail, wire, _fake = self.probe(
+            {"responses": (400, body)}, model="claude-3.5-sonnet-20241022")
+        self.assertEqual((status, wire), ("fail", None))
+
+    def test_plural_models_with_slash_is_fail(self):
+        body = "models/gemini-1.5-pro is not found"
+        status, _detail, wire, _fake = self.probe(
+            {"responses": (400, body)}, model="gemini-1.5-pro")
+        self.assertEqual((status, wire), ("fail", None))
+
+    def test_valid_values_tail_is_fail(self):
+        """"Valid values: ..." 里的 value 不能把 strong 降级。"""
+        body = 'The model `gpt-9` does not exist. Valid values: gpt-4o, gpt-4o-mini.'
+        status, _detail, wire, _fake = self.probe({"responses": (400, body)})
+        self.assertEqual((status, wire), ("fail", None))
+
+    def test_check_the_value_tail_is_fail(self):
+        body = ("The model 'gpt-9' does not exist. "
+                "Please check the value and try again.")
+        status, _detail, wire, _fake = self.probe({"responses": (400, body)})
+        self.assertEqual((status, wire), ("fail", None))
+
+    def test_model_value_prefix_is_fail(self):
+        body = "The model value 'gpt-9' does not exist"
+        status, _detail, wire, _fake = self.probe({"responses": (400, body)})
+        self.assertEqual((status, wire), ("fail", None))
+
+    def test_invalid_model_name_is_fail(self):
+        body = "invalid model name: gpt-9"
+        status, _detail, wire, _fake = self.probe({"responses": (400, body)})
+        self.assertEqual((status, wire), ("fail", None))
+
+    def test_invalid_model_id_is_fail(self):
+        status, _detail, wire, _fake = self.probe(
+            {"responses": (400, "Invalid model id")})
+        self.assertEqual((status, wire), ("fail", None))
+
+    def test_invalid_model_version_is_fail(self):
+        status, _detail, wire, _fake = self.probe(
+            {"responses": (400, "invalid model version 2")})
+        self.assertEqual((status, wire), ("fail", None))
+
+    def test_pretty_printed_json_with_newline_is_fail(self):
+        """pretty-print 的 JSON 里有换行，换行不能当句子边界。"""
+        body = '{\n  "error": {\n    "message": "The model `gpt-4.2` does not exist"\n  }\n}'
+        status, _detail, wire, _fake = self.probe({"responses": (400, body)})
+        self.assertEqual((status, wire), ("fail", None))
+
+    def test_chinese_model_directory_is_ok(self):
+        """「模型目录」是模型仓库，不是模型名。"""
+        body = '{"error":"模型目录不存在"}'
+        status, _detail, wire, _fake = self.probe({"responses": (400, body)})
+        self.assertEqual((status, wire), ("ok", "responses"))
+
+
+class TestProbeFalsePositiveGuards(ProbeTestBase):
+    """反方向的红线：正常的参数错误 / 正常端点不能被误判成「模型名错误」。
+
+    误伤的伤害和原 Bug 相反但同样重：probe 结果会落盘到 providers.json 的
+    last_probe.ok，一个本来正确的厂商会长期顶着红灯，用户跑去改一个好端端
+    的模型名。所以这一组全部断言**不**判 fail。
+    """
+
+    def test_param_negation_before_model_is_ok(self):
+        """否定词在 model 前面 → 说的是参数，不是模型名。"""
+        body = '{"error":"parameter temperature does not exist for model gpt-4o"}'
+        status, _detail, wire, _fake = self.probe({"responses": (400, body)})
+        self.assertEqual((status, wire), ("ok", "responses"))
+
+    def test_azure_style_max_tokens_is_ok(self):
+        body = ('{"error":"The value for \'max_tokens\' does not exist '
+                'in the model schema"}')
+        status, _detail, wire, _fake = self.probe({"responses": (400, body)})
+        self.assertEqual((status, wire), ("ok", "responses"))
+
+    def test_chinese_param_error_is_ok(self):
+        """「模型参数 temperature 不存在」：模型 → 不存在 隔了 17 字，不算模型名错。"""
+        body = '{"error":"模型参数 temperature 不存在"}'
+        status, _detail, wire, _fake = self.probe({"responses": (400, body)})
+        self.assertEqual((status, wire), ("ok", "responses"))
+
+    def test_invalid_model_parameter_value_is_ok(self):
+        """`invalid model` 后面跟的是 parameter value，不是模型名。"""
+        body = '{"error":"invalid model parameter value: temperature must be <= 2"}'
+        status, _detail, wire, _fake = self.probe({"responses": (400, body)})
+        self.assertEqual((status, wire), ("ok", "responses"))
+
+    def test_chinese_model_list_endpoint_unavailable_is_ok(self):
+        """「模型列表接口不可用」是接口挂了，不影响推理，不能判模型名错。"""
+        body = '{"error":"模型列表接口暂时不可用，不影响推理"}'
+        status, _detail, wire, _fake = self.probe({"responses": (400, body)})
+        self.assertEqual((status, wire), ("ok", "responses"))
+
+    def test_short_chinese_model_param_error_is_ok(self):
+        body = '{"error":"模型参数不存在"}'
+        status, _detail, wire, _fake = self.probe({"responses": (400, body)})
+        self.assertEqual((status, wire), ("ok", "responses"))
+
+    def test_404_page_mentioning_models_still_probes_chat(self):
+        """404 页面里的 /models 链接不能被当成模型名错误。
+
+        这类页面必须继续去试 chat，才能落到「该厂商只支持 chat」这个
+        正确结论；跳过探测会把用户引到改模型名的死路上。
+        """
+        body = ('The requested URL does not exist. '
+                'Docs: <a href="/models">/models</a>')
+        status, _detail, wire, fake = self.probe({
+            "responses": (404, body),
+            "chat/completions": (200, '{"choices":[]}'),
+        })
+        self.assertEqual((status, wire), ("warn", "chat"))
+        self.assertEqual(fake.count(), 1, "404 页面提到 models 时仍必须试 chat")
+        self.assertTrue(any(u.endswith("chat/completions") for u in fake.calls))
+
+    def test_weak_signal_gives_warn_not_fail(self):
+        """只能推断的情况给 warn，绝不能判 fail、也不能声称端点有问题。"""
+        body = '{"error":"模型 GPT-9 不存在"}'
+        status, detail, wire, _fake = self.probe(
+            {"responses": (400, body)}, model="GPT-9")
+        self.assertEqual((status, wire), ("warn", "responses"))
+        self.assertIn("疑似", detail)
+        self.assertIn("GPT-9", detail, "文案要带上用户填的模型名")
+
+    def test_weak_signal_on_404_still_probes_chat(self):
+        body = '{"error":"模型 GPT-9 不存在"}'
+        status, _detail, wire, fake = self.probe({
+            "responses": (404, body),
+            "chat/completions": (200, '{"choices":[]}'),
+        })
+        self.assertEqual((status, wire), ("warn", "chat"))
+        self.assertEqual(fake.count(), 1, "weak 不能跳过 chat 探测")
+
+    def test_400_invalid_api_key_is_auth_fail(self):
+        """400 + Key 错：不该显示绿灯（这是改前就有的老毛病）。"""
+        for body in ('{"error":"invalid api key"}',
+                     '{"error":"Incorrect API key provided"}',
+                     '{"error":{"code":"invalid_api_key"}}',
+                     '{"msg":"API 密钥无效"}'):
+            status, _detail, wire, _fake = self.probe({"responses": (400, body)})
+            self.assertEqual((status, wire), ("auth_fail", None), body)
+
+    def test_marker_between_2000_and_4096_is_detected(self):
+        """截断窗口必须与 _http_post 的 exc.read(4096) 对齐。
+
+        2152 字符左右的冗长错误体（云厂商把字段清单排在 message 前面）
+        以前正好落在 2000~4096 的盲区里，又被判成绿灯。
+        """
+        body = ("x" * 2134) + '{"error":"model not found"}'
+        position = body.index("model not found")
+        self.assertGreater(position, 2000)
+        self.assertLess(position, 4096)
+        status, _detail, wire, _fake = self.probe({"responses": (400, body)})
+        self.assertEqual((status, wire), ("fail", None))
+
+    def test_marker_beyond_read_limit_is_ignored(self):
+        """4096 之后不再看：_http_post 本来也只读 4096，不会再有这种 body。"""
+        body = ("x" * 5000) + '{"error":"model not found"}'
+        status, _detail, wire, _fake = self.probe({"responses": (400, body)})
+        self.assertEqual((status, wire), ("ok", "responses"))
+
+    def test_en_model_offtopic_is_ok(self):
+        """model 后面紧跟的是 list / endpoint 这类词 → 说的是 API 面，不是模型名。"""
+        for body in ('model list endpoint is not available',
+                     'the model docs page does not exist',
+                     'model catalog is not available'):
+            status, _detail, wire, _fake = self.probe({"responses": (400, body)})
+            self.assertEqual((status, wire), ("ok", "responses"), body)
+
+    def test_plain_model_unavailable_still_warns(self):
+        """真正的「模型不可用」不能被离题排除顺手放过，仍要 warn 兜底。"""
+        status, _detail, wire, _fake = self.probe(
+            {"responses": (400, "model gpt-4o is currently unavailable")})
+        self.assertEqual((status, wire), ("warn", "responses"))
+
+    def test_dotted_model_unavailable_warns(self):
+        """weak 层与 strong 层必须用同一套点号规则：带点模型名也要 warn。"""
+        for body in ("model gpt-4.2 is not available",
+                     "model qwen2.5 is not supported",
+                     "model llama-3.1 is unavailable"):
+            status, detail, wire, _fake = self.probe({"responses": (400, body)})
+            self.assertEqual((status, wire), ("warn", "responses"), body)
+            self.assertIn("疑似", detail)
+
+    def test_plain_model_unavailable_without_dot_warns(self):
+        """无点的写法不能因为换正则而回归。"""
+        status, _detail, wire, _fake = self.probe(
+            {"responses": (400, "model gpt-4o is unavailable")})
+        self.assertEqual((status, wire), ("warn", "responses"))
+
+    def test_key_error_wins_over_model_error(self):
+        """同时出现 Key 错与 model not found 时先报 auth_fail（Key 坏时模型报错是假象）。"""
+        body = '{"error":"invalid api key","detail":"model not found"}'
+        status, _detail, wire, _fake = self.probe({"responses": (400, body)})
+        self.assertEqual((status, wire), ("auth_fail", None))
+
+
+class TestLooksLikeModelError(unittest.TestCase):
+    """_looks_like_model_error 的白色接线测试（纯函数，不涉及网络）。"""
+
+    def test_recognises_common_phrasings(self):
+        samples = [
+            '{"error":"model not found"}',
+            '{"error":{"message":"Model Does Not Exist"}}',
+            '{"code":"model_not_found"}',
+            '{"error":"no such model: foo"}',
+            '{"error":"unknown model gpt-9"}',
+            '{"error":"invalid model: gpt-9"}',
+            '{"error":"the model is not available"}',
+            '{"error":"you do not have access to model gpt-5"}',
+            '{"error":"does not have access to model `claude`"}',
+            '{"error":"you do not have access to model gpt-5"}',
+            '{"error":{"message":"The model `gpt-9` does not exist"}}',
+            '{"msg":"模型不存在"}',
+            '{"msg":"模型不存在或不可用"}',
+            '{"msg":"该模型不可用"}',
+        ]
+        for text in samples:
+            self.assertTrue(core._looks_like_model_error(text), text)
+
+    def test_rejects_unrelated_bodies(self):
+        samples = [
+            "",
+            None,
+            '{"error":"max_output_tokens too large"}',
+            '{"error":"invalid api key"}',
+            '{"error":"messages: field required"}',
+            "<html><body>502 Bad Gateway</body></html>",
+            '{"error":"invalid_request_error: unknown parameter"}',
+            # 以下 5 条是「参数错误」而不是「模型名错误」，必须一条都不命中
+            '{"error":"parameter temperature does not exist for model gpt-4o"}',
+            '{"error":"The value for \'max_tokens\' does not exist in the model schema"}',
+            '{"error":"模型参数 temperature 不存在"}',
+            '{"error":"invalid model parameter value: temperature must be <= 2"}',
+            '{"error":"模型列表接口暂时不可用，不影响推理"}',
+            'The requested URL does not exist. Docs: <a href="/models">/models</a>',
+        ]
+        for text in samples:
+            self.assertFalse(core._looks_like_model_error(text), repr(text))
+
+    def test_level_separates_strong_from_weak(self):
+        """明确指向模型名的判 strong，需要推断的判 weak，参数错误判空。"""
+        self.assertEqual(core._model_error_level('{"error":"model not found"}'), "strong")
+        self.assertEqual(core._model_error_level('{"msg":"模型不存在"}'), "strong")
+        self.assertEqual(core._model_error_level('{"msg":"模型 GPT-9 不存在"}'), "weak")
+        self.assertEqual(core._model_error_level('{"error":"模型列表不可用"}'), "")
+        self.assertEqual(
+            core._model_error_level('{"error":"model gpt-9 is currently unavailable"}'),
+            "weak")
+        self.assertEqual(core._model_error_level(""), "")
+        self.assertEqual(core._model_error_level(None), "")
+
+    def test_truncates_before_matching(self):
+        """先截断再匹配：正文深处偶然出现的短语不该被当真。"""
+        body = "<html>" + ("x" * 200000) + "model not found</html>"
+        started = time.time()
+        self.assertFalse(core._looks_like_model_error(body))
+        self.assertLess(time.time() - started, 1.0)
+        # 命中短文案时（在截断窗口内）依然要判 True
+        self.assertTrue(core._looks_like_model_error("model not found" + "x" * 200000))
 
 
 # ---------------------------------------------------------------- 源码级回归守卫
