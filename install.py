@@ -410,7 +410,9 @@ def main(argv=None):
         return 1
 
     print("      已创建  %s" % shortcut)
-    print("\n完成。双击桌面的「Codex 模型切换」即可使用。")
+    print("\n完成。安装到此结束，这一步不需要填写任何 API Key。")
+    print("请【双击桌面上的「Codex 模型切换」】打开图形界面，")
+    print("在界面里点「+ 新增厂商」时，才需要粘贴你的 API Key。")
     return 0
 
 
