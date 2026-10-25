@@ -9,6 +9,47 @@
 
 ---
 
+## 三分钟上手
+
+> 前提：Windows 10 / 11，**Python 3.8+**，且 Codex 桌面版**至少启动过一次**（工具要读 `~/.codex/config.toml`）。
+> 本仓库不含任何 API Key，需要你自己去厂商平台申请。
+
+| 步骤 | 做什么 |
+|---|---|
+| 1 | 点页面右上角绿色 **`Code`** → **`Download ZIP`** |
+| 2 | 解压到任意目录，例如 `D:\Tools\codex-model-switcher` |
+| 3 | 进目录，**双击 `install.bat`**（桌面会出现「Codex 模型切换」） |
+| 4 | 双击桌面那个图标启动工具 |
+| 5 | 点左下 **「+ 新增厂商」** → 从「从预设填充」里选一家 → 粘上 API Key |
+| 6 | **先点「测试连接」**，看到「responses 可用」再「保存」→ 再点「切换到此厂商」 |
+| 7 | 重启 Codex，模型选择器里就能看到新模型 |
+
+**去哪申请 Key**（都支持 OpenAI 兼容接口，按需选一家即可）：
+
+| 厂商 | 申请地址 | Key 形态 / 注意 |
+|---|---|---|
+| DeepSeek | platform.deepseek.com | `sk-…` |
+| Kimi 开放平台 | platform.kimi.com | `sk-…` |
+| Kimi Code 订阅 | 随订阅发放 | `sk-kimi-…`，**端点与开放平台不同**，选「Kimi Code（订阅）」预设 |
+| 阿里云百炼 / 通义千问 | bailian.console.aliyun.com | `sk-…` |
+| 智谱 GLM | open.bigmodel.cn | 直接一串字符 |
+| 硅基流动 | cloud.siliconflow.cn | `sk-…` |
+| 火山方舟（豆包） | console.volcengine.com | 要填**推理接入点 ID**（`ep-…`），不是模型名 |
+| OpenRouter | openrouter.ai | `sk-or-…` |
+
+**卡住了看这里：**
+
+| 现象 | 原因与处理 |
+|---|---|
+| `install.bat` 一闪而过，或提示找不到 Python | 装 Python 3.8+ 时必须勾选 **Add python.exe to PATH**，装完重开一次命令行 |
+| 桌面图标变成白纸 | Codex 自动升级换了版本目录，进目录执行 `python install.py --shortcut-only` 重建 |
+| 「测试连接」报 **Key 无效或无权限** | 多半是 Key 和 Base URL 不是同一家。国内站和国际站是两套独立账号，Key 不能混用 |
+| 「测试连接」报 **模型名不存在** | 模型名拼错，或这个 Key 没开通该模型（去厂商控制台确认模型列表） |
+| 「测试连接」报 **只支持 chat 协议** | 该厂商没实现 Responses API，当前 Codex 版本用不了，换一家 |
+| 切换后 Codex 打不开 / 没有窗口 | 看第七节「常见问题」，多数是 `preferred_auth_method` 这类旧配置残留 |
+
+---
+
 ## 一、它到底做了什么
 
 Codex 只在启动时读一次 `~/.codex/config.toml`。所以「换供应商」的本质就是：
