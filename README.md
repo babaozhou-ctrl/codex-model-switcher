@@ -332,6 +332,33 @@ Codex 只在**启动时**读配置。取消勾选「切换后自动重启 Codex�
 **Q：Codex 升级后桌面图标变成白纸？**
 WindowsApps 下的路径带版本号，升级后会失效。重跑 `python install.py --shortcut-only`。
 
+**Q：Codex 自动升级后双击没反应，或者窗口一片纯黑/纯白？**
+这两种是升级后的典型故障，**和本工具无关**（切回官方 GPT 也一样），按顺序处理：
+
+1. **进程在跑但没有窗口** —— 先彻底结束所有残留进程再重开。任务管理器里结束所有
+   `ChatGPT.exe`，或命令行执行 `taskkill /F /IM ChatGPT.exe`，等几秒再打开 Codex。
+2. **窗口是纯黑/纯白，一直不加载** —— 渲染缓存和新版本不兼容。关掉 Codex 后，删掉下面目录里的
+   `GPUPersistentCache`、`GrShaderCache`、`ShaderCache`、`Default\GPUCache`、`Default\Cache`、
+   `Default\Code Cache`（全是可重建的缓存，**不会丢聊天记录**），再启动：
+
+   ```
+   %LOCALAPPDATA%\Packages\OpenAI.Codex_2p2nqsd0c76g0\LocalCache\Roaming\Codex\web\Codex\
+   ```
+3. 顺手把图标也修掉：`python install.py --shortcut-only`
+
+**怎么判断卡在哪一步**：看 `%LOCALAPPDATA%\Packages\OpenAI.Codex_2p2nqsd0c76g0\LocalCache\Local\Codex\Logs\`
+下最新的 `.log` 文件——
+
+| 日志最后停在 | 说明 | 走哪一步 |
+|---|---|---|
+| `Launching app ...` 之后再无输出 | 渲染层没起来 | 第 2 步（清缓存） |
+| `startup policy read failed ... retrying=false` | 卡在账号初始化 | 第 1 步（清进程重启） |
+| `Sign in to ChatGPT to start a durable thread` | 凭据过期且连不上 | 见上一条 FAQ |
+
+> 实测记录：2026-10-24 那次升级卡在账号初始化（清进程重启解决）；
+> 2026-10-29 那次升级表现为纯黑窗口，日志停在 `Launching app`，
+> 清掉 GPU/着色器缓存后立刻正常。
+
 **Q：网络体检里 `api.openai.com` 显示 403？**
 403 是「链路通但节点被拦」，说明代理通了但当前节点被 OpenAI 挡了，换个节点即可。
 
